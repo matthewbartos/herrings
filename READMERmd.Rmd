@@ -1,0 +1,236 @@
+---
+title: "Eksploracja Masywnych Danych - analiza długości śledzi"
+author: "Mateusz Bartos (122437)"
+date: "12/4/2019"
+output:
+  md_document:
+    toc: true
+    variant: markdown_github
+  html_document:
+    toc: true
+    df_print: paged
+---
+
+# 🐟 Śledzie
+> Projekt z Eksploracji Masywnych Danych, analiza długości śledzi
+
+![Śledzie](herrings.gif)
+
+## 0. Wstęp
+
+Długość śledzi oceanicznych w Europie zmniejsza się wraz z upływem lat. W niniejszym raporcie przeanalizowano dane z połowów komercyjnych jednostek przez ostatnie 60 lat. W ramach połowu  losowo wybierano od 50 do 100 sztuk trzyletnich śledzi. Wykonano m.in. interpretację i analizę atrybutów, analizę korelacji atrybutów, stworzenie klasyfikatorów w celu znalezienia najistotniejszej cechy.
+
+
+## 1. Kod wyliczający wykorzystane biblioteki
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+ # if (!require("pacman")) install.packages("pacman")
+
+libraries <- c(
+  "knitr",
+  "kableExtra",
+  "plotly",
+  "dplyr",
+  "tidyverse",
+  "ggplot2",
+  "ggExtra",
+  "cowplot",
+  "gridExtra",
+  "imputeTS",
+  "corrplot",
+  "reshape2",
+  "caret",
+  "gganimate",
+  "png",
+  "gifski"
+  )
+
+library(knitr)
+library(kableExtra)
+library(plotly)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(ggExtra)
+library(cowplot)
+library(gridExtra)
+library(imputeTS)
+library(corrplot)
+library(reshape2)
+library(caret)
+library(gganimate)
+library(png)
+library(gifski)
+
+ invisible(pacman::p_load(libraries, character.only = TRUE))
+
+# try tofix the caret
+# install.packages("caret", dependencies = c("Depends", "Suggests"))
+
+libraries
+```
+
+## 2. Kod zapewniający powtarzalność wyników przy każdym uruchomieniu raportu na tych samych danych.
+
+```{r}
+set.seed(40)
+```
+
+## 3. Kod pozwalający wczytać dane z pliku
+```{r}
+headers <- read.table("sledzie.csv", nrow=1, stringsAsFactors = FALSE, sep = ",")
+content <- read.table("sledzie.csv", header=TRUE, stringsAsFactors = FALSE, sep=",", na.strings = c("", "?", "NA"))
+
+head(content)
+```
+
+## 4. Kod przetwarzający brakujące dane
+```{r}
+content$cfin1 <- na_kalman(content$cfin1)
+content$cfin2 <- na_kalman(content$cfin2)
+content$chel1 <- na_kalman(content$chel1)
+content$chel2 <- na_kalman(content$chel2)
+content$lcop1 <- na_kalman(content$lcop1)
+content$lcop2 <- na_kalman(content$lcop2)
+content$sst <- na_kalman(content$sst)
+
+head(content)
+```
+
+## 5. Sekcja podsumowująca rozmiar zbioru i podstawowe statystyki
+
+Rozmiar zbioru:
+```{r}
+nrow(content)
+```
+
+Podstawowe statystyki:
+```{r}
+content %>%
+  summary()
+```
+
+## 6. Szczegółowa analiza wartości atrybutów
+
+Rozkład cech:
+```{r}
+
+plots <- (
+  lapply(names(content)[-1], function(var_x) {
+    ggplot(content) + aes_string(var_x) + geom_histogram() + theme_bw()
+  })
+)
+
+plot_grid(plotlist = plots)
+```
+
+## 7. Sekcja sprawdzającą korelacje między zmiennymi
+```{r}
+par(xpd=TRUE)
+corrplot.mixed(cor(content[-1]), tl.srt = 90, tl.pos="lt", diag = "l", tl.col="black", number.cex=.6, tl.cex=.6, mar = c(0, 0, 2, 0))
+```
+
+- Można zauważyć dodatnią korelację pomiędzy *chel1* (zagęszczenie Calanus helgolandicus gat. 1) a *lcop1* (zagęszczenie widłonogów gat. 1) ~= `0.96`
+- Można zauważyć dodatnią korelację pomiędzy *chel2* (zagęszczenie Calanus helgolandicus gat. 2) a *lcop2* (zagęszczenie widłonogów gat. 2) ~= `0.88`
+- Można zauważyć dodatnią korelację pomiędzy *cfin2* (zagęszczenie Calanus finmarchicus gat. 2) a *lcop2* (zagęszczenie widłonogów gat. 2) ~= `0.65`
+- Można zauważyć dodatnią korelację pomiędzy *sst* (temperatura przy powierzchni wody [°C]) a *nao* (oscylacja północnoatlantycka [mb]) ~= `0.51`
+- *[Najciekawsze]* - można zauważyć ujemną korelację pomiędzy *length* (długość złowionego śledzia [cm]) a *sst* (temperatura przy powierzchni wody) ~= `-0.45`
+
+```{r}
+ggplot(content, aes(sst, length)) + geom_point() + geom_smooth(method="lm") + ylab(sprintf("długość")) + xlab("temperatura") + ggtitle("Ze wzrostem temperatury maleje długość")
+```
+
+## 8. Interaktywny wykres lub animację prezentującą zmianę rozmiaru śledzi w czasie
+
+```{R}
+p <- ggplot(content, aes(X, length)) +
+  geom_point() +
+  geom_smooth(method = "auto", color = "red")
+
+# ggplotly(p) - Plotly is not working for me - dependency issue
+
+p
+```
+
+- Można zauważyć wzrost długości śledzia do pewnego momentu (~row 17500) po czym następuje spadek długości.
+
+
+## 9. Sekcja regresora przewidującego rozmiar śledzia, parametry modelu oraz oszacowanie jego skuteczności
+
+Podzielmy dane na:
+- zbiór *uczący* - `0.75` zbioru początkowego
+- zbiór *testowy* - `0.25` zbioru początkowego
+
+```{R}
+
+normalized_content <- data.frame(content[-1])
+
+training_indexes <- createDataPartition(y = normalized_content$length, p = .75, list = FALSE)
+
+training_set <- normalized_content[ training_indexes]
+testing_set  <- normalized_content[-training_indexes]
+
+rounded_content <- sapply(normalized_content$length, round, digits = 0)
+
+control_params <- trainControl( method = "repeatedcv", number = 5, repeats = 10)
+```
+
+### kNN
+
+```{r}
+set.seed(40)
+
+# bug
+# n <- names(normalized_content)
+# f <- as.formula(paste("length ~", paste(n[!n %in% "length"], collapse = " + ")))
+# f <- reformulate(setdiff(colnames(normalized_content), "length"), response="length")
+# model <- lm(f, data=training_set)
+# new <- data.frame(testing_set)
+# predict(model, newdata=new, interval="confidence")
+
+# model_regression <- caret::train(f, data=training_set, method = "lm", trControl = control_params)
+
+# regression_classes <- predict(model_regression, newdata = testing_set)
+# regression_classes <- sapply(regression_classes, round, digits = 0)
+
+# levels <- unique(c(rounded_content, regression_classes))
+
+# postResample(pred = regression_classes, obs = rounded_content)
+```
+
+### kNN
+
+```{r}
+#model_knn <- train(length ~ ., data = training_set, method = "knn", importance=T, trControl = control_params)
+
+#knn_classes <- predict(model_knn, newdata = testing_set)
+#knn_classes <- sapply(knn_classes, round, digits = 0)
+
+#levels <- unique(c(rounded_content, knn_classes))
+
+#postResample(pred = knn_classes, obs = rounded_content)
+#plot(model_knn)
+```
+
+### Random Forest
+```{r}
+#model_random_forest <- train(length ~ ., data = training_set, method = "rf", importance=T, trControl = control_params, ntree = 10) 
+
+#random_forest_classes <- predict(model_random_forest, newdata = testing_set)
+#random_forest_classes <- sapply(random_forest_classes, round, digits = 0)
+
+#levels <- unique(c(rounded_content, random_forest_classes))
+
+#postResample(pred = random_forest_classes, obs = rounded_content)
+```
+
+## 10. Analiza ważności atrybutów najlepszego znalezionego modelu regresji
+```{r}
+#models <- list(randomForest = model_random_forest, linearRegression = model_regression, kNN = model_knn) %>% resamples()
+
+#dotplot(models, metric = "RMSE")
+#dotplot(models, metric = "Rsquared")
+```
+
+
+Niestety z powodów problemu z biblioteką `carot` nie byłem w stanie sprawdzić wyników modeli :(
